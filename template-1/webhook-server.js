@@ -25,10 +25,19 @@ app.post('/webhook/customer-data', (req, res) => {
   const data = req.body;
   
   // Validate the expected n8n data structure
-  if (!data.customer_name || !data.subscriptions) {
+  // Handle both array format [{"output": {...}}] and direct object format
+  let validData = null;
+  
+  if (Array.isArray(data) && data[0]?.output) {
+    validData = data[0].output;
+  } else if (data.customer_name || data.output?.customer_name) {
+    validData = data.output || data;
+  }
+  
+  if (!validData || !validData.customer_name || !validData.subscriptions) {
     return res.status(400).json({
       success: false,
-      message: 'Invalid data format. Expected customer_name and subscriptions.'
+      message: 'Invalid data format. Expected customer_name and subscriptions in output object.'
     });
   }
   
@@ -52,8 +61,10 @@ app.post('/webhook/customer-data', (req, res) => {
   res.status(200).json({
     success: true,
     message: 'Customer data received successfully',
-    customer_name: data.customer_name,
-    subscriptions_count: data.subscriptions.length,
+    customer_name: validData.customer_name,
+    customer_id: validData.customer_id,
+    email: validData.email,
+    subscriptions_count: validData.subscriptions.length,
     timestamp: webhookEntry.timestamp
   });
 });

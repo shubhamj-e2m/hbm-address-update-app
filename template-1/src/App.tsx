@@ -2,19 +2,24 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import './App.css'
 
 // Webhook interface for incoming data from n8n
-interface WebhookData {
-  customer_name: string;
-  subscriptions: {
-    id: string;
-    recipient_name: string;
-    current_address: {
-      address1: string;
-      city: string;
-      province: string;
-      zip: string;
-      country_code: string;
-    };
-  }[];
+interface N8nWebhookData {
+  output: {
+    customer_name: string;
+    customer_id: number;
+    email: string;
+    date_time: string;
+    subscriptions: {
+      id: string;
+      recipient_name: string;
+      current_address: {
+        address1: string;
+        city: string;
+        province: string;
+        zip: string;
+        country_code: string;
+      };
+    }[];
+  };
 }
 
 interface Subscription {
@@ -41,14 +46,25 @@ function App() {
     selectedSubscriptions: [],
     subscriptionAddresses: {}
   });
-  const [addressSuggestions, setAddressSuggestions] = useState<{[key: string]: string[]}>({});
-  const [showSuggestions, setShowSuggestions] = useState<{[key: string]: boolean}>({});
+  const [addressSuggestions, setAddressSuggestions] = useState<{ [key: string]: string[] }>({});
+  const [showSuggestions, setShowSuggestions] = useState<{ [key: string]: boolean }>({});
   const [showToast, setShowToast] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string>('');
-  
+
   // Customer and subscription data from webhook
   const [customerName, setCustomerName] = useState<string>('');
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+
+  // Metadata from n8n (not displayed in UI, but sent back)
+  const [customerMetadata, setCustomerMetadata] = useState<{
+    customer_id: number | null;
+    email: string;
+    date_time: string;
+  }>({
+    customer_id: null,
+    email: '',
+    date_time: ''
+  });
 
   // Debounce timer refs
   const debounceTimer = useRef<number | null>(null);
@@ -57,14 +73,14 @@ function App() {
   // Function to normalize state to abbreviation
   const normalizeStateToAbbreviation = useCallback((state: string): string => {
     if (!state) return '';
-    
+
     // If it's already an abbreviation (2 characters), return as is
     if (state.length === 2) {
       return state.toUpperCase();
     }
-    
+
     // Map of full state names to abbreviations
-    const stateMap: {[key: string]: string} = {
+    const stateMap: { [key: string]: string } = {
       'Alabama': 'AL', 'Alaska': 'AK', 'Arizona': 'AZ', 'Arkansas': 'AR', 'California': 'CA',
       'Colorado': 'CO', 'Connecticut': 'CT', 'Delaware': 'DE', 'Florida': 'FL', 'Georgia': 'GA',
       'Hawaii': 'HI', 'Idaho': 'ID', 'Illinois': 'IL', 'Indiana': 'IN', 'Iowa': 'IA',
@@ -76,30 +92,30 @@ function App() {
       'South Dakota': 'SD', 'Tennessee': 'TN', 'Texas': 'TX', 'Utah': 'UT', 'Vermont': 'VT',
       'Virginia': 'VA', 'Washington': 'WA', 'West Virginia': 'WV', 'Wisconsin': 'WI', 'Wyoming': 'WY'
     };
-    
+
     // Check if it's a full state name and convert to abbreviation
     const normalizedState = stateMap[state] || state.toUpperCase();
     return normalizedState;
   }, []);
 
   // Function to fetch state and city from zipcode using Zippopotam.us API
-  const fetchLocationFromZipcode = useCallback(async (zipcode: string): Promise<{state: string | null, city: string | null}> => {
+  const fetchLocationFromZipcode = useCallback(async (zipcode: string): Promise<{ state: string | null, city: string | null }> => {
     try {
       // Clean zipcode (remove spaces, non-numeric characters except for US format)
       const cleanZipcode = zipcode.replace(/\s+/g, '').replace(/[^\d-]/g, '');
-      
+
       if (cleanZipcode.length < 5) {
         return { state: null, city: null };
       }
 
       const response = await fetch(`https://api.zippopotam.us/us/${cleanZipcode}`);
-      
+
       if (!response.ok) {
         throw new Error('Failed to fetch zipcode data');
       }
-      
+
       const data = await response.json();
-      
+
       if (data.places && data.places.length > 0) {
         const place = data.places[0];
         return {
@@ -107,7 +123,7 @@ function App() {
           city: place['place name'] || null // Returns city name (e.g., "Springfield", "Chicago")
         };
       }
-      
+
       return { state: null, city: null };
     } catch (error) {
       console.error('Error fetching location from zipcode:', error);
@@ -125,20 +141,20 @@ function App() {
       // Construct search query with city and state for better results
       const searchQuery = `${query}, ${city}, ${state}, USA`;
       const encodedQuery = encodeURIComponent(searchQuery);
-      
+
       const response = await fetch(
         `https://nominatim.openstreetmap.org/search?format=json&q=${encodedQuery}&countrycodes=us&limit=5&addressdetails=1`
       );
-      
+
       if (!response.ok) {
         throw new Error('Failed to fetch address suggestions');
       }
-      
+
       const data = await response.json();
-      
+
       // Extract display names from the results
       const suggestions = data.map((item: any) => item.display_name).filter(Boolean);
-      
+
       return suggestions;
     } catch (error) {
       console.error('Error fetching address suggestions:', error);
@@ -206,7 +222,7 @@ function App() {
   const handleSuggestionSelect = (subscriptionId: string, suggestion: string) => {
     // Extract just the street address part (before the first comma)
     const streetAddress = suggestion.split(',')[0].trim();
-    
+
     setFormData(prev => ({
       ...prev,
       subscriptionAddresses: {
@@ -217,7 +233,7 @@ function App() {
         }
       }
     }));
-    
+
     // Hide suggestions
     setShowSuggestions(prev => ({
       ...prev,
@@ -259,21 +275,41 @@ function App() {
           if (result.success && result.data && result.data.length > 0) {
             // Get the latest webhook data
             const latestWebhookData = result.data[0];
-            if (latestWebhookData.data && latestWebhookData.data.customer_name) {
-              const webhookPayload: WebhookData = latestWebhookData.data;
-              
+
+            // Handle new n8n data structure: [{"output": {...}}]
+            let webhookPayload: N8nWebhookData['output'] | null = null;
+
+            if (latestWebhookData.data) {
+              // Check if data is array format from n8n
+              if (Array.isArray(latestWebhookData.data) && latestWebhookData.data[0]?.output) {
+                webhookPayload = latestWebhookData.data[0].output;
+              }
+              // Fallback for direct object format
+              else if (latestWebhookData.data.customer_name) {
+                webhookPayload = latestWebhookData.data;
+              }
+            }
+
+            if (webhookPayload) {
               // Set customer name
               setCustomerName(webhookPayload.customer_name);
-              
+
+              // Store metadata (not displayed in UI)
+              setCustomerMetadata({
+                customer_id: webhookPayload.customer_id || null,
+                email: webhookPayload.email || '',
+                date_time: webhookPayload.date_time || ''
+              });
+
               // Transform webhook subscriptions to our format
               const transformedSubscriptions: Subscription[] = webhookPayload.subscriptions.map(sub => ({
                 id: sub.id,
                 name: sub.recipient_name,
                 address: `${sub.current_address.address1}\n${sub.current_address.city}, ${sub.current_address.province} ${sub.current_address.zip}`
               }));
-              
+
               setSubscriptions(transformedSubscriptions);
-              
+
               // Initialize form data with first subscription selected by default
               if (transformedSubscriptions.length > 0) {
                 const firstSub = transformedSubscriptions[0];
@@ -309,10 +345,10 @@ function App() {
 
     // Poll every 2 seconds
     const interval = setInterval(pollWebhookData, 2000);
-    
+
     // Initial call
     pollWebhookData();
-    
+
     return () => clearInterval(interval);
   }, []);
 
@@ -324,7 +360,7 @@ function App() {
       const parts = name.split('.');
       const subscriptionId = parts[1];
       const addressField = parts[2];
-      
+
       // Update the form data immediately
       setFormData(prev => ({
         ...prev,
@@ -341,7 +377,7 @@ function App() {
       if (addressField === 'zipCode') {
         handleZipcodeChange(subscriptionId, value);
       }
-      
+
       // If it's a street field, trigger address suggestions
       if (addressField === 'street') {
         const currentAddress = formData.subscriptionAddresses[subscriptionId];
@@ -352,17 +388,17 @@ function App() {
     } else if (name === 'selectedSubscriptions') {
       const target = e.target as HTMLInputElement;
       const subscriptionId = value;
-      
+
       setFormData(prev => {
         let updatedSelections: string[];
         let updatedAddresses = { ...prev.subscriptionAddresses };
-        
+
         if (target.checked) {
           // Add to selection if not already present
-          updatedSelections = prev.selectedSubscriptions.includes(subscriptionId) 
-            ? prev.selectedSubscriptions 
+          updatedSelections = prev.selectedSubscriptions.includes(subscriptionId)
+            ? prev.selectedSubscriptions
             : [...prev.selectedSubscriptions, subscriptionId];
-          
+
           // If this subscription doesn't have an address yet, populate it
           if (!updatedAddresses[subscriptionId]) {
             const selectedSub = subscriptions.find(sub => sub.id === subscriptionId);
@@ -376,7 +412,7 @@ function App() {
               const stateZipParts = stateZip.split(' ');
               const state = stateZipParts[0] || '';
               const zipCode = stateZipParts[1] || '';
-              
+
               updatedAddresses[subscriptionId] = {
                 street: street,
                 city: city,
@@ -392,7 +428,7 @@ function App() {
           // Remove the address data for this subscription
           delete updatedAddresses[subscriptionId];
         }
-        
+
         return {
           ...prev,
           selectedSubscriptions: updatedSelections,
@@ -409,20 +445,20 @@ function App() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     // Check if all selected subscriptions have complete address information
     const allAddressesComplete = formData.selectedSubscriptions.every(subscriptionId => {
       const address = formData.subscriptionAddresses[subscriptionId];
       return address && address.street && address.city && address.state && address.zipCode;
     });
-    
+
     if (formData.selectedSubscriptions.length > 0 && allAddressesComplete) {
       try {
         // Prepare data for webhook in the required format
         const webhookData = formData.selectedSubscriptions.map(subscriptionId => {
           const subscription = subscriptions.find(sub => sub.id === subscriptionId);
           const newAddress = formData.subscriptionAddresses[subscriptionId];
-          
+
           // Parse old address from subscription.address
           const oldAddressParts = subscription?.address.split('\n') || [];
           const oldStreet = oldAddressParts[0] || '';
@@ -455,11 +491,15 @@ function App() {
         });
 
         // Send updated data back to n8n using GET method with query parameters
+        // Include metadata that came from n8n
         const queryParams = new URLSearchParams({
           customer_name: customerName,
+          customer_id: customerMetadata.customer_id?.toString() || '',
+          email: customerMetadata.email,
+          date_time: customerMetadata.date_time,
           updated_subscriptions: JSON.stringify(webhookData)
         });
-        
+
         const response = await fetch(`https://n8n.sitepreviews.dev/webhook/d93e3a8c-9f3b-410e-a375-6d301cf7d4a4?${queryParams}`, {
           method: 'GET',
           headers: {
@@ -472,7 +512,7 @@ function App() {
           console.log('Address update submitted:', formData);
           setToastMessage('Your address will be updated successfully!');
           setShowToast(true);
-          
+
           // Hide toast after 3 seconds
           setTimeout(() => {
             setShowToast(false);
@@ -481,7 +521,7 @@ function App() {
           console.error('Webhook call failed:', response.status);
           setToastMessage('Address update submitted, but there was an issue with the server.');
           setShowToast(true);
-          
+
           // Hide toast after 3 seconds
           setTimeout(() => {
             setShowToast(false);
@@ -491,7 +531,7 @@ function App() {
         console.error('Error calling webhook:', error);
         setToastMessage('Address update submitted, but there was an issue with the server.');
         setShowToast(true);
-        
+
         // Hide toast after 3 seconds
         setTimeout(() => {
           setShowToast(false);
@@ -527,14 +567,14 @@ function App() {
           <img src="/logo.jpg" alt="History By Mail Logo" className="header-logo" />
           <h1>History By Mail</h1>
         </div>
-        
+
         <div className="content">
           <div className="greeting">Dear {customerName || 'Valued Customer'},</div>
-          
+
           <div className="message">
             We found multiple subscriptions on your account, Please select the subscription you want to update the address and provide your new address which you want to update.
           </div>
-          
+
           <form onSubmit={handleSubmit} className="response-form">
             <div className="subscriptions-container">
               <table className="subscriptions-table">
@@ -573,18 +613,18 @@ function App() {
                 </tbody>
               </table>
             </div>
-            
-           
+
+
             {formData.selectedSubscriptions.map((subscriptionId) => {
               const subscription = subscriptions.find(sub => sub.id === subscriptionId);
               const address = formData.subscriptionAddresses[subscriptionId];
-              
+
               return (
                 <div key={subscriptionId} className="address-form-section">
                   <h3 className="section-title">
                     New Address Information for {subscription?.name} (Subscription - {subscriptionId})
                   </h3>
-                  
+
                   <div className="form-row">
                     <div className="form-group full-width">
                       <label htmlFor={`address.${subscriptionId}.street`} className="form-label">
@@ -604,8 +644,8 @@ function App() {
                           autoComplete="off"
                         />
                         {showSuggestions[subscriptionId] && addressSuggestions[subscriptionId]?.length > 0 && (
-                          <div 
-                            className="address-suggestions" 
+                          <div
+                            className="address-suggestions"
                             style={{
                               position: 'absolute',
                               top: '100%',
@@ -655,7 +695,7 @@ function App() {
                       </div>
                     </div>
                   </div>
-                  
+
                   <div className="form-row">
                     <div className="form-group">
                       <label htmlFor={`address.${subscriptionId}.city`} className="form-label">
@@ -672,7 +712,7 @@ function App() {
                         required
                       />
                     </div>
-                    
+
                     <div className="form-group">
                       <label htmlFor={`address.${subscriptionId}.state`} className="form-label">
                         State *
@@ -688,7 +728,7 @@ function App() {
                         required
                       />
                     </div>
-                    
+
                     <div className="form-group">
                       <label htmlFor={`address.${subscriptionId}.zipCode`} className="form-label">
                         ZIP Code *
@@ -705,7 +745,7 @@ function App() {
                       />
                     </div>
                   </div>
-                  
+
                   <div className="form-row">
                     <div className="form-group">
                       <label htmlFor={`address.${subscriptionId}.country`} className="form-label">
@@ -724,26 +764,26 @@ function App() {
                 </div>
               );
             })}
-            
-            
+
+
             <div className="button-container">
               <button type="submit" className="response-button">
                 UPDATE ADDRESS
-        </button>
+              </button>
             </div>
           </form>
-          
+
           <div className="closing">
             Thank you for keeping your subscription information up to date. We'll ensure your next mails are delivered to your new address, however mails ordered prior to address change will be delivered on your old address
           </div>
-          
+
           <div className="signature">
             Best regards,<br />
             History by Mail Support Team<br /><br />
             For any further inquiry you can contact us on support@historybymail.com
           </div>
         </div>
-        
+
         <div className="footer">
           <p>History by Mail Support Team</p>
         </div>

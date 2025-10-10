@@ -620,7 +620,7 @@ function App() {
       )}
       <div className="email-container">
         <div className="header">
-          <img src="/Public/logo.jpg" alt="History By Mail Logo" className="header-logo" />
+          <img src="Public/logo.jpg" alt="History By Mail Logo" className="header-logo" />
           <h1>History By Mail</h1>
         </div>
 

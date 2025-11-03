@@ -544,7 +544,7 @@ function App() {
           updated_subscriptions: JSON.stringify(webhookData)
         });
 
-        const response = await fetch(`https://n8n.sitepreviews.dev/webhook/d93e3a8c-9f3b-410e-a375-6d301cf7d4a4?${queryParams}`, {
+        const response = await fetch(`https://historybymail.app.n8n.cloud/webhook/d93e3a8c-9f3b-410e-a375-6d301cf7d4a4?${queryParams}`, {
           method: 'GET',
           headers: {
             'Content-Type': 'application/json',
